@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2018
+// Copyright (c) 2019
 // Mainflux
 //
 // SPDX-License-Identifier: Apache-2.0
@@ -8,6 +8,7 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -33,7 +34,7 @@ func NewChannelRepository(db *sqlx.DB) things.ChannelRepository {
 	}
 }
 
-func (cr channelRepository) Save(channel things.Channel) (string, error) {
+func (cr channelRepository) Save(_ context.Context, channel things.Channel) (string, error) {
 	q := `INSERT INTO channels (id, owner, name, metadata)
         VALUES (:id, :owner, :name, :metadata);`
 
@@ -57,7 +58,7 @@ func (cr channelRepository) Save(channel things.Channel) (string, error) {
 	return channel.ID, nil
 }
 
-func (cr channelRepository) Update(channel things.Channel) error {
+func (cr channelRepository) Update(_ context.Context, channel things.Channel) error {
 	q := `UPDATE channels SET name = :name, metadata = :metadata WHERE owner = :owner AND id = :id;`
 
 	dbch, err := toDBChannel(channel)
@@ -90,7 +91,7 @@ func (cr channelRepository) Update(channel things.Channel) error {
 	return nil
 }
 
-func (cr channelRepository) RetrieveByID(owner, id string) (things.Channel, error) {
+func (cr channelRepository) RetrieveByID(_ context.Context, owner, id string) (things.Channel, error) {
 	q := `SELECT name, metadata FROM channels WHERE id = $1 AND owner = $2;`
 	dbch := dbChannel{
 		ID:    id,
@@ -108,7 +109,7 @@ func (cr channelRepository) RetrieveByID(owner, id string) (things.Channel, erro
 	return toChannel(dbch)
 }
 
-func (cr channelRepository) RetrieveAll(owner string, offset, limit uint64, name string) (things.ChannelsPage, error) {
+func (cr channelRepository) RetrieveAll(_ context.Context, owner string, offset, limit uint64, name string) (things.ChannelsPage, error) {
 	name = strings.ToLower(name)
 	nq := ""
 	if name != "" {
@@ -176,7 +177,7 @@ func (cr channelRepository) RetrieveAll(owner string, offset, limit uint64, name
 	return page, nil
 }
 
-func (cr channelRepository) RetrieveByThing(owner, thing string, offset, limit uint64) (things.ChannelsPage, error) {
+func (cr channelRepository) RetrieveByThing(_ context.Context, owner, thing string, offset, limit uint64) (things.ChannelsPage, error) {
 	// Verify if UUID format is valid to avoid internal Postgres error
 	if _, err := uuid.FromString(thing); err != nil {
 		return things.ChannelsPage{}, things.ErrNotFound
@@ -240,7 +241,7 @@ func (cr channelRepository) RetrieveByThing(owner, thing string, offset, limit u
 	}, nil
 }
 
-func (cr channelRepository) Remove(owner, id string) error {
+func (cr channelRepository) Remove(_ context.Context, owner, id string) error {
 	dbch := dbChannel{
 		ID:    id,
 		Owner: owner,
@@ -250,7 +251,7 @@ func (cr channelRepository) Remove(owner, id string) error {
 	return nil
 }
 
-func (cr channelRepository) Connect(owner, chanID, thingID string) error {
+func (cr channelRepository) Connect(_ context.Context, owner, chanID, thingID string) error {
 	q := `INSERT INTO connections (channel_id, channel_owner, thing_id, thing_owner)
 	      VALUES (:channel, :owner, :thing, :owner);`
 
@@ -278,7 +279,7 @@ func (cr channelRepository) Connect(owner, chanID, thingID string) error {
 	return nil
 }
 
-func (cr channelRepository) Disconnect(owner, chanID, thingID string) error {
+func (cr channelRepository) Disconnect(_ context.Context, owner, chanID, thingID string) error {
 	q := `DELETE FROM connections
 	      WHERE channel_id = :channel AND channel_owner = :owner
 	      AND thing_id = :thing AND thing_owner = :owner`
@@ -306,7 +307,7 @@ func (cr channelRepository) Disconnect(owner, chanID, thingID string) error {
 	return nil
 }
 
-func (cr channelRepository) HasThing(chanID, key string) (string, error) {
+func (cr channelRepository) HasThing(_ context.Context, chanID, key string) (string, error) {
 	var thingID string
 
 	q := `SELECT id FROM things WHERE key = $1`
@@ -315,17 +316,71 @@ func (cr channelRepository) HasThing(chanID, key string) (string, error) {
 
 	}
 
-	q = `SELECT EXISTS (SELECT 1 FROM connections WHERE channel_id = $1 AND thing_id = $2);`
-	exists := false
-	if err := cr.db.QueryRow(q, chanID, thingID).Scan(&exists); err != nil {
+	if err := cr.hasThing(chanID, thingID); err != nil {
 		return "", err
-	}
 
-	if !exists {
-		return "", things.ErrUnauthorizedAccess
 	}
 
 	return thingID, nil
+}
+
+func (cr channelRepository) HasThingByID(_ context.Context, chanID, thingID string) error {
+	return cr.hasThing(chanID, thingID)
+}
+
+func (cr channelRepository) hasThing(chanID, thingID string) error {
+	q := `SELECT EXISTS (SELECT 1 FROM connections WHERE channel_id = $1 AND thing_id = $2);`
+	exists := false
+	if err := cr.db.QueryRow(q, chanID, thingID).Scan(&exists); err != nil {
+		return err
+	}
+
+	if !exists {
+		return things.ErrUnauthorizedAccess
+	}
+
+	return nil
+}
+
+type dbChannel struct {
+	ID       string `db:"id"`
+	Owner    string `db:"owner"`
+	Name     string `db:"name"`
+	Metadata string `db:"metadata"`
+}
+
+func toDBChannel(ch things.Channel) (dbChannel, error) {
+	data, err := json.Marshal(ch.Metadata)
+	if err != nil {
+		return dbChannel{}, err
+	}
+
+	return dbChannel{
+		ID:       ch.ID,
+		Owner:    ch.Owner,
+		Name:     ch.Name,
+		Metadata: string(data),
+	}, nil
+}
+
+func toChannel(ch dbChannel) (things.Channel, error) {
+	var metadata map[string]interface{}
+	if err := json.Unmarshal([]byte(ch.Metadata), &metadata); err != nil {
+		return things.Channel{}, err
+	}
+
+	return things.Channel{
+		ID:       ch.ID,
+		Owner:    ch.Owner,
+		Name:     ch.Name,
+		Metadata: metadata,
+	}, nil
+}
+
+type dbConnection struct {
+	Channel string `db:"channel"`
+	Thing   string `db:"thing"`
+	Owner   string `db:"owner"`
 }
 
 type dbChannel struct {

@@ -145,8 +145,9 @@ function parseTopic(topic) {
 aedes.authorizePublish = function (client, packet, publish) {
     var channel = parseTopic(packet.topic);
     if (!channel) {
-        logger.warn('unknown topic');
-        publish(4); // Bad username or password
+        var err = new Error('unknown topic');
+        logger.warn(err);
+        publish(err); // Bad username or password
         return;
     }
     var channelId = channel[1],
@@ -159,34 +160,49 @@ aedes.authorizePublish = function (client, packet, publish) {
         isEmpty = function(value) { 
             return value !== ''; 
         },
-        elements = packet.topic.split('/').slice(baseLength).join('.').split('.').filter(isEmpty),
+        parts = packet.topic.split('/'),
+        elements = parts.slice(baseLength).join('.').split('.').filter(isEmpty),
         baseTopic = 'channel.' + channelId;
     // Remove empty elements
     for (var i = 0; i < elements.length; i++) {
         if (elements[i].length > 1 && (elements[i].includes('*') || elements[i].includes('>'))) {
-            logger.warn('invalid subtopic');
-            publish(4);
+            var err = new Error('invalid subtopic');
+            logger.warn(err);
+            publish(err);
             return;
         }
     }
-    var channelTopic = elements.length ? baseTopic + '.' + elements.join('.') : baseTopic,
+
+    var contentType = 'application/senml+json',
+        st = elements;
+    
+    if (elements.length > 1 && elements[elements.length - 2] === 'ct') {
+        // If there is ct prefix, read and decode content type.
+        contentType = elements[elements.length - 1].replace('_', '/').replace('-', '+');
+        st = elements.slice(0, elements.length - 2);
+        parts = parts.slice(0, parts.length - 2);
+    }
+    packet.topic = parts.join('/');
+
+    var channelTopic = st.length ? baseTopic + '.' + st.join('.') : baseTopic,
         onAuthorize = function (err, res) {
             var rawMsg;
             if (!err) {
                 rawMsg = RawMessage.encode({
                     publisher: client.thingId,
                     channel: channelId,
-                    subtopic: elements.join('.'),
+                    subtopic: st.join('.'),
+                    contentType: contentType,
                     protocol: 'mqtt',
                     payload: packet.payload
                 }).finish();
 
                 nats.publish(channelTopic, rawMsg);
 
-                publish(0);
+                publish(null);
             } else {
                 logger.warn('unauthorized publish: %s', err.message);
-                publish(4); // Bad username or password
+                publish(err); // Bad username or password
             }
         };
 
@@ -198,7 +214,8 @@ aedes.authorizeSubscribe = function (client, packet, subscribe) {
     var channel = parseTopic(packet.topic);
     if (!channel) {
         logger.warn('unknown topic');
-        subscribe(4, packet); // Bad username or password
+        var err = new Error('unknown topic')
+        subscribe(err, null); // Bad username or password
         return;
     }
     var channelId = channel[1],
@@ -211,7 +228,7 @@ aedes.authorizeSubscribe = function (client, packet, subscribe) {
                 subscribe(null, packet);
             } else {
                 logger.warn('unauthorized subscribe: %s', err.message);
-                subscribe(4, packet); // Bad username or password
+                subscribe(err, null); // Bad username or password
             }
         };
 
@@ -230,6 +247,7 @@ aedes.authenticate = function (client, username, password, acknowledge) {
                 publishConnEvent(client.thingId, 'connect');
             } else {
                 logger.warn('failed to authenticate client with key %s', pass);
+                err.responseCode = 4;
                 acknowledge(err, false);
             }
         };

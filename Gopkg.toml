@@ -1,8 +1,4 @@
 [[constraint]]
-  name = "github.com/asaskevich/govalidator"
-  version = "9.0.0"
-
-[[constraint]]
   name = "github.com/cisco/senml"
   branch = "master"
 
@@ -88,10 +84,6 @@
   branch = "master"
 
 [[constraint]]
-  name = "github.com/dereulenspiegel/coap-mux"
-  branch = "master"
-
-[[constraint]]
   name = "github.com/dustin/go-coap"
   branch = "master"
 
@@ -118,6 +110,10 @@
 [[constraint]]
   name = "github.com/gofrs/uuid"
   version = "~v3.2.0"
+
+[[constraint]]
+  name = "github.com/opentracing/opentracing-go"
+  version = "~v1.1.0"
 
 [prune]
   go-tests = true
